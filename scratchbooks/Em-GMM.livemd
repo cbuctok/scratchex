@@ -1,0 +1,264 @@
+# Gaussian Mixture Model (GMM) playground
+
+```elixir
+Mix.install([
+  {:vega_lite, "~> 0.1.9"},
+  {:kino_vega_lite, "~> 0.1.13"}
+])
+alias VegaLite, as: Vl
+```
+
+## Gently Building Up The EM Algorithm
+
+<https://abidlabs.github.io/EM-Algorithm/>  
+Suppose you have two friends, Alice and Bob, each of whom have a biased coin that flips heads with probabilities a and b respectively.  
+They flip their coins 10 times and write down the number of heads and tails they get on a slip of paper.  
+They repeat this process several times, generating many slips of papers, which they stuff into an envelope and hand it to you.  
+Based only on the numbers written on the slips of paper, can you estimate the original probabilities {$a$,$b$}?  
+(The order of $a$ and $b$ doesn’t matter, just their values.)
+
+```elixir
+slips = [
+  %{slip: 1, heads: 6, tails: 4},
+  %{slip: 2, heads: 2, tails: 8},
+  %{slip: 3, heads: 8, tails: 2},
+  %{slip: 4, heads: 3, tails: 7},
+  %{slip: 5, heads: 3, tails: 7},
+  %{slip: 6, heads: 5, tails: 5}
+]
+
+Enum.each(slips, fn value ->
+  IO.inspect(value)
+  end)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+%{slip: 1, heads: 6, tails: 4}
+%{slip: 2, heads: 2, tails: 8}
+%{slip: 3, heads: 8, tails: 2}
+%{slip: 4, heads: 3, tails: 7}
+%{slip: 5, heads: 3, tails: 7}
+%{slip: 6, heads: 5, tails: 5}
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+## 1
+
+So how might you approach this problem?
+
+(1) Well, if there was only one person, say Alice, writing down numbers, then this would be a very simple question.  
+You would simply count the number of heads and divide it by the total number of flips of the coin.  
+In the example above, if Alice generated all 6 slips, then your estimate of $a$ would be:
+
+```elixir
+number_of_flips = slips
+  |> Enum.reduce(0, 
+    fn(slip, acc) -> acc + slip.heads + slip.tails end)
+number_of_heads = slips
+  |> Enum.reduce(0,
+    fn(slip, acc) -> acc + slip.heads end)
+
+estimate_of_a = number_of_heads/number_of_flips
+IO.puts("Estimate of a is #{estimate_of_a}")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Estimate of a is 0.45
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+Your intuition likely tells you that this strategy will give you a good estimate of $a$.  
+In fact, this is the maximum likelihood estimate (MLE) of $a$, defined as the value of $a$ that produces the highest probability of observing the given data, and it is consistent, meaning that with enough slips of paper, you can estimate $a$ to any desired degree of accuracy.
+
+## 2
+
+(2) However, the tricky thing in this problem is that you have two separate coins with their own biases, and you don’t know whether each slip of paper is comes from Alice’s coin or Bob’s.  
+If you knew the assignment of the slips to either Alice or Bob (e.g. if they each handed you a separate envelope), then you could carry out the procedure in (1) separately for Alice and Bob, and this problem would be a piece of cake.  
+(This is a common feature of EM problems: if you knew some “hidden variables”, producing an estimate would be super easy.)
+
+## 3
+
+(3) But all hope is not lost.  
+Looking at the example above, it seems that the slips belong to two clusters, one that produces flips with a low frequency of heads (slips 2, 4, and 5) and another sets of slips that seem to come from a coin that lands on heads more often (slips 1, 3, and 6).  
+It seems natural to think that one set of slips corresponds to Alice and the other to Bob.  
+We could make this assumption and then calculate the MLE estimate of $a$ and $b$, just like we did before:
+
+```elixir
+slips_with_high_frequency_of_heads = Enum.filter(slips,
+  fn %{heads: heads, tails: tails} -> heads >= tails end)
+
+slips_with_high_frequency_of_tails = Enum.filter(slips,
+  fn %{heads: heads, tails: tails} -> tails > heads end)
+
+flips_per_slip = Enum.reduce(slips, 0, fn %{heads: heads, tails: tails}, acc ->
+  acc + heads + tails
+  end) / length(slips)
+
+slips_with_high_frequency_of_heads_heads = Enum.reduce(slips_with_high_frequency_of_heads, 0,
+  fn(slip, acc) -> acc + slip.heads end)
+
+slips_with_high_frequency_of_tails_heads = Enum.reduce(slips_with_high_frequency_of_tails, 0,
+  fn(slip, acc) -> acc + slip.heads end)
+
+mle_estimate_a = slips_with_high_frequency_of_heads_heads /
+  (flips_per_slip * length(slips_with_high_frequency_of_heads))
+mle_estimate_b = slips_with_high_frequency_of_tails_heads /
+  (flips_per_slip * length(slips_with_high_frequency_of_tails))
+
+IO.puts("MLE estimate of a is #{mle_estimate_a |> Float.round(2)}")
+IO.puts("MLE estimate of b is #{mle_estimate_b |> Float.round(2)}")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+MLE estimate of a is 0.63
+MLE estimate of b is 0.27
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+## 4
+
+(4) But, what if we’re wrong?  
+Maybe instead, both coins are actually fair, and all of the observed variation is simply due to chance. How do we know which case is correct?  
+To decide between various options for $a$ and $b$, we should compute the probability that our data would be generated under that assumption, and choose the values of $a$ and $b$ that has the highest probability of occurring.  
+So for example, if $a=0.3$,$b=0.9$, then slip 4 (with 3H, 7T) could have been generated by Alice with a high probability and by Bob with a low probability.  
+We would average those together to get net likelihood of observing slip 4, and then we would repeat this process for every slip, and multiply those likelihoods together to get the probability of observing all of the data in the envelope. The values of $a$ and $b$ that maximize this probability is, again, called the **maximum likelihood estimate**.
+
+## 5
+
+(5) The only problem with this approach is that there are an infinite number of values to guess for $a$ and $b$, and unlike the situation described in (1), it’s not immediately clear how to select these parameters to maximize the likelihood.  
+An alternative strategy might be to guess an assignment of slips to Alice and Bob, since there are only a finite number of ways to assign the slips. For each assignment, we compute the MLE estimate of $a$ and $b$, and we choose the assignment that maximizes the probability of observing all of the data.  
+Even though this is a better strategy, it is still exponential in the number of slips, $N$, since there are $2^N$ assignments…
+
+## 6
+
+(6) Well, what if we start with a random assignment and even if we’re wrong, we don’t start over from scratch, but just reallocate slips in a way to make the likelihood higher based on our initial assignment?  
+For example, suppose we start by allocating slips 1, 2, and 3 to Alice, and slips 4, 5, and 6 to Bob. Then, our MLE estimate of $a$ would be $0.53$ and $b$ would be $0.37$.  
+Under these values of $a$ and $b$, it is much more likely that slip 2 was actually generated by Bob and slip 6 by Alice, so in the next iteration, we assign slips 1, 3, and 6 to Alice, and slips 2, 4, and 5 to Bob.  
+For slips that we are not sure about, we could even “partially” allocate them to Alice and “partially” to Bob.  
+Then, based on the new allocation, we recompute the MLE estimates of $a$ and $b$, and continue to iterate in this fashion.
+
+## ==========================
+
+```elixir
+# Helper function to calculate probabilities
+defmodule Probability do
+  def binomial(k, n, p) do
+    :math.pow(p, k) * :math.pow(1 - p, n - k) * 
+    (factorial(n) / (factorial(k) * factorial(n - k)))
+  end
+
+  # Custom factorial implementation
+  def factorial(0), do: 1
+  def factorial(n) when n > 0, do: n * factorial(n - 1)
+end
+
+# Initialize parameters
+a = 0.5
+b = 0.5
+n_iterations = 10
+
+# Function to perform one iteration of EM
+defmodule EM do
+  def iterate(slips, a, b) do
+    # E-step: Calculate responsibilities
+    responsibilities = Enum.map(slips, fn slip ->
+      p_a = Probability.binomial(slip.heads, slip.heads + slip.tails, a)
+      p_b = Probability.binomial(slip.heads, slip.heads + slip.tails, b)
+      r_a = p_a / (p_a + p_b)
+      %{slip: slip.slip, r_a: r_a, r_b: 1 - r_a}
+    end)
+
+    # M-step: Update parameters
+    new_a = Enum.sum(Enum.map(responsibilities, fn r -> 
+      slip = Enum.find(slips, &(&1.slip == r.slip))
+      r.r_a * slip.heads
+    end)) / Enum.sum(Enum.map(responsibilities, fn r -> 
+      slip = Enum.find(slips, &(&1.slip == r.slip))
+      r.r_a * (slip.heads + slip.tails)
+    end))
+
+    new_b = Enum.sum(Enum.map(responsibilities, fn r -> 
+      slip = Enum.find(slips, &(&1.slip == r.slip))
+      r.r_b * slip.heads
+    end)) / Enum.sum(Enum.map(responsibilities, fn r -> 
+      slip = Enum.find(slips, &(&1.slip == r.slip))
+      r.r_b * (slip.heads + slip.tails)
+    end))
+
+    {new_a, new_b, responsibilities}
+  end
+end
+
+# Run EM algorithm
+{iterations, _} = Enum.map_reduce(1..n_iterations, {a, b}, fn i, {current_a, current_b} ->
+  {new_a, new_b, responsibilities} = EM.iterate(slips, current_a, current_b)
+  iteration_data = %{
+    iteration: i,
+    a: new_a,
+    b: new_b,
+    responsibilities: responsibilities
+  }
+  {iteration_data, {new_a, new_b}}
+end)
+
+IO.puts "data prepared"
+
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+data prepared
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+```elixir
+# Create final distribution plot
+final_iteration = List.last(iterations)
+final_distribution_data = Enum.map(slips, fn slip ->
+  resp = Enum.find(final_iteration.responsibilities, &(&1.slip == slip.slip))
+  %{
+    slip: slip.slip,
+    heads_ratio: slip.heads / (slip.heads + slip.tails),
+    coin_a_prob: resp.r_a,
+    coin_b_prob: resp.r_b
+  }
+end)
+
+final_distribution_plot = Vl.new(width: 400, height: 300)
+|> Vl.data_from_values(final_distribution_data)
+|> Vl.mark(:point, size: 100, opacity: 0.7)
+|> Vl.encode_field(:x, "heads_ratio", type: :quantitative, title: "Ratio of Heads")
+|> Vl.encode_field(:y, "slip", type: :ordinal, title: "Slip")
+|> Vl.encode_field(:color, "coin_a_prob", type: :quantitative, title: "Probability of Coin A")
+|> Vl.config(view: [stroke: nil])
+
+final_distribution_plot |> Kino.VegaLite.new()
+
+```
